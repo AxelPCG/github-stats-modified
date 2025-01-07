@@ -3,11 +3,11 @@
 <!--
 https://github.community/t/support-theme-context-for-images-in-light-vs-dark-mode/147981/84
 -->
-<a href="https://github.com/jstrieb/github-stats">
-<img src="https://github.com/jstrieb/github-stats/blob/master/generated/overview.svg#gh-dark-mode-only" />
-<img src="https://github.com/jstrieb/github-stats/blob/master/generated/languages.svg#gh-dark-mode-only" />
-<img src="https://github.com/jstrieb/github-stats/blob/master/generated/overview.svg#gh-light-mode-only" />
-<img src="https://github.com/jstrieb/github-stats/blob/master/generated/languages.svg#gh-light-mode-only" />
+<a href="https://github.com/AxelPCG/github-stats-modified">
+<img src="https://github.com/AxelPCG/github-stats-modified/blob/main/generated/overview.svg#gh-dark-mode-only" />
+<img src="https://github.com/AxelPCG/github-stats-modified/blob/main/generated/languages.svg#gh-dark-mode-only" />
+<img src="https://github.com/AxelPCG/github-stats-modified/blob/main/generated/overview.svg#gh-light-mode-only" />
+<img src="https://github.com/AxelPCG/github-stats-modified/blob/main/generated/languages.svg#gh-light-mode-only" />
 </a>
 
 Generate visualizations of GitHub user and repository statistics with GitHub
@@ -54,11 +54,6 @@ Unexpectedly, these values will become more accurate over time as GitHub
 caches statistics for your repositories. Additionally, repositories that were
 last contributed to more than a year ago may not be included in the statistics
 due to limitations in the results returned by the API.
-
-For more information on inaccuracies, see issue
-[#2](https://github.com/jstrieb/github-stats/issues/2),
-[#3](https://github.com/jstrieb/github-stats/issues/3), and
-[#13](https://github.com/jstrieb/github-stats/issues/13).
 
 # Installation
 
@@ -128,5 +123,7 @@ For more information on inaccuracies, see issue
 
 - Inspired by a desire to improve upon
   [anuraghazra/github-readme-stats](https://github.com/anuraghazra/github-readme-stats)
+  [jstrieb/github-stats](https://github.com/jstrieb/github-stats)
+  
 - Makes use of [GitHub Octicons](https://primer.style/octicons/) to precisely
   match the GitHub UI
