@@ -136,6 +136,7 @@ async def main() -> None:
             exclude_langs=excluded_langs,
             ignore_forked_repos=ignore_forked_repos,
         )
+        s._emails = email_list  # Add this line
         await asyncio.gather(generate_languages(s), generate_overview(s))
 
 

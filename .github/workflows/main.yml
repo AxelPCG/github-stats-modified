@@ -42,13 +42,13 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         EXCLUDED: ${{ secrets.EXCLUDED }}
         EXCLUDED_LANGS: ${{ secrets.EXCLUDED_LANGS }}
-        EXCLUDE_FORKED_REPOS: trues
+        EXCLUDE_FORKED_REPOS: true
         GIT_EMAILS: ${{ secrets.GIT_EMAILS }}
 
     # Commit all changed files to the repository
     - name: Commit to the repo
       run: |
-        git config --global user.name "AxelPCG/gitgub-stats-py"
+        git config --global user.name "AxelPCG/gitgub-stats-modified"
         git config --global user.email "axelchepanski@hotmail.com"
         git add .
         # Force the build to succeed, even if no files were changed

@@ -273,6 +273,7 @@ class Stats(object):
         self._repos: Optional[Set[str]] = None
         self._lines_changed: Optional[Tuple[int, int]] = None
         self._views: Optional[int] = None
+        self._emails: Optional[Set[str]] = None  # Add this line
 
     async def to_str(self) -> str:
         """
