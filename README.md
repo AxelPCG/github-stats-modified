@@ -122,8 +122,7 @@ due to limitations in the results returned by the API.
 # Related Projects
 
 - Inspired by a desire to improve upon
-  [anuraghazra/github-readme-stats](https://github.com/anuraghazra/github-readme-stats)
-  [jstrieb/github-stats](https://github.com/jstrieb/github-stats)
+  [anuraghazra/github-readme-stats](https://github.com/anuraghazra/github-readme-stats) and [jstrieb/github-stats](https://github.com/jstrieb/github-stats)
   
 - Makes use of [GitHub Octicons](https://primer.style/octicons/) to precisely
   match the GitHub UI
