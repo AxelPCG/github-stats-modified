@@ -4,8 +4,8 @@
 https://github.community/t/support-theme-context-for-images-in-light-vs-dark-mode/147981/84
 -->
 <a href="https://github.com/AxelPCG/github-stats-modified">
-<img src="https://github.com/AxelPCG/github-stats-modified/blob/main/generated/overview.svg#gh-dark-mode-only" />
-<img src="https://github.com/AxelPCG/github-stats-modified/blob/main/generated/languages.svg#gh-dark-mode-only" />
+<img src="https://github.com/AxelPCG/github-stats-modified/blob/main/generated/overview.svg#gh-dark-mode-only" width="400" height="220"/>
+<img src="https://github.com/AxelPCG/github-stats-modified/blob/main/generated/languages.svg#gh-dark-mode-only" width="400" height="220"/>
 <img src="https://github.com/AxelPCG/github-stats-modified/blob/main/generated/overview.svg#gh-light-mode-only" width="400" height="220"/>
 <img src="https://github.com/AxelPCG/github-stats-modified/blob/main/generated/languages.svg#gh-light-mode-only" width="400" height="220"/>
 </a>
