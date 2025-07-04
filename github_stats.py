@@ -51,7 +51,7 @@ class Queries(object):
             result = await r_async.json()
             if result is not None:
                 return result
-        except:
+        except Exception:
             print("aiohttp failed for GraphQL query")
             # Fall back on non-async requests
             async with self.semaphore:
@@ -97,7 +97,7 @@ class Queries(object):
                 result = await r_async.json()
                 if result is not None:
                     return result
-            except:
+            except Exception:
                 print("aiohttp failed for rest query")
                 # Fall back on non-async requests
                 async with self.semaphore:
@@ -111,10 +111,46 @@ class Queries(object):
                         await asyncio.sleep(2)
                         continue
                     elif r_requests.status_code == 200:
-                        return r_requests.json()
+                        result_json = r_requests.json()
+                        if result_json is not None:
+                            return result_json
         # print(f"There were too many 202s. Data for {path} will be incomplete.")
         print("There were too many 202s. Data for this repository will be incomplete.")
         return dict()
+
+    @staticmethod
+    def summary_query() -> str:
+        """
+        :return: GraphQL query with summary of user stats
+        """
+        return f"""query {{
+  viewer {{
+    login
+    name
+    repositories(first: 100, ownerAffiliations: OWNER, isFork: false) {{
+      totalCount
+      edges {{
+        node {{
+          stargazers {{
+            totalCount
+          }}
+          forkCount
+        }}
+      }}
+    }}
+    pullRequests(first: 1) {{
+      totalCount
+    }}
+    issues(first: 1) {{
+        totalCount
+    }}
+    contributionsCollection {{
+      totalCommitContributions
+      restrictedContributionsCount
+    }}
+  }}
+}}
+"""
 
     @staticmethod
     def repos_overview(
@@ -125,8 +161,8 @@ class Queries(object):
         """
         return f"""{{
   viewer {{
-    login,
-    name,
+    login
+    name
     repositories(
         first: 100,
         orderBy: {{
@@ -258,22 +294,26 @@ class Stats(object):
         exclude_repos: Optional[Set] = None,
         exclude_langs: Optional[Set] = None,
         ignore_forked_repos: bool = False,
+        emails: Optional[List[str]] = None,
     ):
         self.username = username
         self._ignore_forked_repos = ignore_forked_repos
         self._exclude_repos = set() if exclude_repos is None else exclude_repos
         self._exclude_langs = set() if exclude_langs is None else exclude_langs
         self.queries = Queries(username, access_token, session)
+        self._emails = emails
 
         self._name: Optional[str] = None
         self._stargazers: Optional[int] = None
         self._forks: Optional[int] = None
         self._total_contributions: Optional[int] = None
+        self._total_commits: Optional[int] = None
+        self._prs: Optional[int] = None
+        self._issues: Optional[int] = None
         self._languages: Optional[Dict[str, Any]] = None
         self._repos: Optional[Set[str]] = None
         self._lines_changed: Optional[Tuple[int, int]] = None
         self._views: Optional[int] = None
-        self._emails: Optional[Set[str]] = None  # Add this line
 
     async def to_str(self) -> str:
         """
@@ -295,6 +335,36 @@ Lines of code changed: {lines_changed[0] + lines_changed[1]:,}
 Project page views: {await self.views:,}
 Languages:
   - {formatted_languages}"""
+
+    async def get_summary_stats(self) -> None:
+        """
+        Get lots of summary statistics using one big query. Sets many attributes
+        """
+        raw_results = await self.queries.query(self.queries.summary_query())
+        if raw_results is None:
+            return
+        viewer = raw_results.get("data", {}).get("viewer", {})
+        if not viewer:
+            return
+
+        self._name = viewer.get("name") or viewer.get("login", "No Name")
+        self._stargazers = sum(
+            [
+                repo["node"]["stargazers"]["totalCount"]
+                for repo in viewer["repositories"]["edges"]
+            ]
+        )
+        self._forks = sum(
+            [repo["node"]["forkCount"] for repo in viewer["repositories"]["edges"]]
+        )
+
+        self._prs = viewer.get("pullRequests", {}).get("totalCount", 0)
+        self._issues = viewer.get("issues", {}).get("totalCount", 0)
+        contributions = viewer.get("contributionsCollection", {})
+        self._total_commits = (
+            contributions.get("totalCommitContributions", 0)
+            + contributions.get("restrictedContributionsCount", 0)
+        )
 
     async def get_stats(self) -> None:
         """
@@ -345,8 +415,8 @@ Languages:
                 if name in self._repos or name in self._exclude_repos:
                     continue
                 self._repos.add(name)
-                self._stargazers += repo.get("stargazers").get("totalCount", 0)
-                self._forks += repo.get("forkCount", 0)
+                # self._stargazers += repo.get("stargazers").get("totalCount", 0)
+                # self._forks += repo.get("forkCount", 0)
 
                 for lang in repo.get("languages", {}).get("edges", []):
                     name = lang.get("node", {}).get("name", "Other")
@@ -375,11 +445,9 @@ Languages:
             else:
                 break
 
-        # TODO: Improve languages to scale by number of contributions to
-        #       specific filetypes
         langs_total = sum([v.get("size", 0) for v in self._languages.values()])
         for k, v in self._languages.items():
-            v["prop"] = 100 * (v.get("size", 0) / langs_total)
+            v["prop"] = 100 * (v.get("size", 0) / langs_total) if langs_total > 0 else 0
 
     @property
     async def name(self) -> str:
@@ -388,7 +456,7 @@ Languages:
         """
         if self._name is not None:
             return self._name
-        await self.get_stats()
+        await self.get_summary_stats()
         assert self._name is not None
         return self._name
 
@@ -399,7 +467,7 @@ Languages:
         """
         if self._stargazers is not None:
             return self._stargazers
-        await self.get_stats()
+        await self.get_summary_stats()
         assert self._stargazers is not None
         return self._stargazers
 
@@ -410,7 +478,7 @@ Languages:
         """
         if self._forks is not None:
             return self._forks
-        await self.get_stats()
+        await self.get_summary_stats()
         assert self._forks is not None
         return self._forks
 
@@ -493,7 +561,7 @@ Languages:
                 ):
                     continue
                 author = author_obj.get("author", {}).get("login", "")
-                if author != self.username:
+                if author.lower() != self.username.lower():
                     continue
 
                 for week in author_obj.get("weeks", []):
@@ -520,62 +588,39 @@ Languages:
 
         self._views = total
         return total
-        
+
+    @property
     async def total_commits(self) -> int:
         """
         Get the total number of commits made by the user.
         """
+        if self._total_commits is not None:
+            return self._total_commits
+        await self.get_summary_stats()
+        assert self._total_commits is not None
+        return self._total_commits
 
-        total_commits = 0
-        for email in self._emails:
-            query = """
-            query {
-              user(login: "%s") {
-                contributionsCollection {
-                  totalCommitContributions
-                }
-              }
-            }
-            """ % self.username
-            print(f"Running query for email: {email}")
-            response = await self.queries.query(query)
-            print(f"Response for email {email}: {response}")
-            if 'data' in response and 'user' in response['data']:
-                total_commits += response['data']['user']['contributionsCollection']['totalCommitContributions']
-            else:
-                print(f"Error: 'data' or 'user' not found in response for email {email}")
-                print(response)
-        print(f"Total commits: {total_commits}")
-        return total_commits
-
-        query = """
-        query {
-          user(login: "%s") {
-            contributionsCollection {
-              totalCommitContributions
-            }
-          }
-        }
-        """ % self.username
-        response = await self.queries.query(query)
-        return response["data"]["user"]["contributionsCollection"]["totalCommitContributions"]
-
-
-    async def total_prs(self) -> int:
+    @property
+    async def prs(self) -> int:
         """
         Get the total number of pull requests made by the user.
         """
-        query = """
-        query {
-          user(login: "%s") {
-            pullRequests {
-              totalCount
-            }
-          }
-        }
-        """ % self.username
-        response = await self.queries.query(query)
-        return response["data"]["user"]["pullRequests"]["totalCount"]
+        if self._prs is not None:
+            return self._prs
+        await self.get_summary_stats()
+        assert self._prs is not None
+        return self._prs
+
+    @property
+    async def issues(self) -> int:
+        """
+        Get the total number of issues opened by the user.
+        """
+        if self._issues is not None:
+            return self._issues
+        await self.get_summary_stats()
+        assert self._issues is not None
+        return self._issues
 
 ###############################################################################
 # Main Function
