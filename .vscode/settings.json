@@ -1,5 +1,10 @@
 {
     "[git-commit]": {
-        "workbench.editor.languageDetection": true
+        "editor.rulers": [50, 72],
+        "editor.wordWrap": "off",
+        "workbench.editor.restoreViewState": false,
+
+        // ▼ nova linha ▼
+        "cSpell.language": "en"
     }
 }
