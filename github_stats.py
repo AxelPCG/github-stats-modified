@@ -296,31 +296,6 @@ query {{
 }}
 """
 
-    @staticmethod
-    def user_forked_repos() -> str:
-        """
-        :return: GraphQL query to get repositories forked by the user
-        """
-        return """
-query {
-  viewer {
-    repositories(first: 100, isFork: true, ownerAffiliations: OWNER) {
-      totalCount
-      pageInfo {
-        hasNextPage
-        endCursor
-      }
-      nodes {
-        nameWithOwner
-        parent {
-          nameWithOwner
-        }
-      }
-    }
-  }
-}
-"""
-
 
 class Stats(object):
     """
@@ -529,13 +504,22 @@ Languages:
     @property
     async def forks(self) -> int:
         """
-        :return: total number of forks on user's repos
+        :return: total number of forks on user's repos + forks made by user
         """
-        if self._forks is not None:
-            return self._forks
-        await self.get_summary_stats()
+        # Primeiro, obter forks recebidos
+        if self._forks is None:
+            await self.get_summary_stats()
         assert self._forks is not None
-        return self._forks
+        forks_received = self._forks
+        
+        # Depois, obter forks feitos
+        forks_made = await self.forks_made
+        
+        # Retornar a soma total
+        total = forks_received + forks_made
+        print(f"Total forks: {forks_received} received + {forks_made} made = {total}")
+        
+        return total
 
     @property
     async def languages(self) -> Dict:
@@ -689,9 +673,9 @@ Languages:
         """
         Get the total number of commits made by the user from all years.
         """
-        if self._total_commits is not None:
-            return self._total_commits
-        await self.get_all_time_commits()
+        # Sempre recalcular se for None para garantir contagem de todos os anos
+        if self._total_commits is None:
+            await self.get_all_time_commits()
         assert self._total_commits is not None
         return self._total_commits
 
@@ -725,20 +709,55 @@ Languages:
             return
             
         print("Fetching forks made by user...")
-        raw_results = await self.queries.query(Queries.user_forked_repos())
         
-        if raw_results is None:
-            self._forks_made = 0
-            return
-            
-        viewer = raw_results.get("data", {}).get("viewer", {})
-        if not viewer:
-            self._forks_made = 0
-            return
-            
-        repositories = viewer.get("repositories", {})
-        self._forks_made = repositories.get("totalCount", 0)
+        total_forks = 0
+        cursor = None
         
+        while True:
+            query = f"""
+query {{
+  viewer {{
+    repositories(first: 100, isFork: true, ownerAffiliations: OWNER, after: {"null" if cursor is None else '"' + cursor + '"'}) {{
+      totalCount
+      pageInfo {{
+        hasNextPage
+        endCursor
+      }}
+      nodes {{
+        nameWithOwner
+        parent {{
+          nameWithOwner
+        }}
+      }}
+    }}
+  }}
+}}
+"""
+            raw_results = await self.queries.query(query)
+            
+            if raw_results is None:
+                self._forks_made = 0
+                return
+                
+            viewer = raw_results.get("data", {}).get("viewer", {})
+            if not viewer:
+                self._forks_made = 0
+                return
+                
+            repositories = viewer.get("repositories", {})
+            
+            # Na primeira página, pegamos o totalCount
+            if cursor is None:
+                total_forks = repositories.get("totalCount", 0)
+                
+            # Verificar se há mais páginas
+            page_info = repositories.get("pageInfo", {})
+            if page_info.get("hasNextPage"):
+                cursor = page_info.get("endCursor")
+            else:
+                break
+                
+        self._forks_made = total_forks
         print(f"Found {self._forks_made} forks made by user")
 
     @property
@@ -756,16 +775,10 @@ Languages:
         """
         Get total commits from all years
         """
-        if self._total_commits is not None:
-            return
-            
+        # Não verificar se _total_commits já existe, sempre recalcular
         print("Fetching commits from all years...")
         
-        # Primeiro, pegar os commits do contributionsCollection (ano atual)
-        await self.get_summary_stats()
-        current_year_commits = self._total_commits or 0
-        
-        # Depois, buscar commits de todos os anos
+        # Buscar commits de todos os anos
         years = (
             (await self.queries.query(Queries.contrib_years()))
             .get("data", {})
