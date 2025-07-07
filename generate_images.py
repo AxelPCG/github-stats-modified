@@ -41,10 +41,10 @@ async def generate_overview(s: Stats) -> None:
     output = re.sub("{{ contributions }}", f"{await s.total_contributions:,}", output)
     output = re.sub("{{ views }}", f"{await s.views:,}", output)
     output = re.sub("{{ repos }}", f"{len(await s.repos):,}", output)
-    commits = await s.total_commits()
-    print(f"Total commits: {commits}")
-    output = re.sub("{{ commits }}", f"{commits:,}", output)  # Adicionado
-    output = re.sub("{{ prs }}", f"{await s.total_prs():,}", output)  # Adicionado
+    commits = await s.total_commits
+    output = re.sub("{{ commits }}", f"{commits:,}", output)
+    output = re.sub("{{ prs }}", f"{await s.prs:,}", output)
+    output = re.sub("{{ issues }}", f"{await s.issues:,}", output)
 
     generate_output_folder()
     with open("generated/overview.svg", "w") as f:
@@ -124,7 +124,7 @@ async def main() -> None:
     )
     emails = os.getenv("GIT_EMAILS")
     email_list = (
-        {x.strip() for x in emails.split(",")} if emails else None
+        list({x.strip() for x in emails.split(",")}) if emails else None
     )
     
     async with aiohttp.ClientSession() as session:
@@ -135,8 +135,8 @@ async def main() -> None:
             exclude_repos=excluded_repos,
             exclude_langs=excluded_langs,
             ignore_forked_repos=ignore_forked_repos,
+            emails=email_list,
         )
-        s._emails = email_list  # Add this line
         await asyncio.gather(generate_languages(s), generate_overview(s))
 
 

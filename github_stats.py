@@ -51,7 +51,7 @@ class Queries(object):
             result = await r_async.json()
             if result is not None:
                 return result
-        except:
+        except Exception:
             print("aiohttp failed for GraphQL query")
             # Fall back on non-async requests
             async with self.semaphore:
@@ -73,10 +73,15 @@ class Queries(object):
         :return: deserialized REST JSON output
         """
 
-        for _ in range(60):
+        for attempt in range(60):
             headers = {
                 "Authorization": f"token {self.access_token}",
             }
+            
+            # API de busca de commits requer header especial
+            if "/search/commits" in path:
+                headers["Accept"] = "application/vnd.github.cloak-preview+json"
+                
             if params is None:
                 params = dict()
             if path.startswith("/"):
@@ -89,32 +94,84 @@ class Queries(object):
                         params=tuple(params.items()),
                     )
                 if r_async.status == 202:
-                    # print(f"{path} returned 202. Retrying...")
-                    print(f"A path returned 202. Retrying...")
+                    print(f"Request to {path} returned 202 (processing). Retrying in 2s... (attempt {attempt + 1}/60)")
                     await asyncio.sleep(2)
                     continue
+                elif r_async.status == 403:
+                    print(f"Request to {path} returned 403 (rate limit). Retrying in 5s... (attempt {attempt + 1}/60)")
+                    await asyncio.sleep(5)
+                    continue
+                elif r_async.status == 404:
+                    print(f"Request to {path} returned 404 (not found). Skipping...")
+                    return dict()
 
                 result = await r_async.json()
                 if result is not None:
                     return result
-            except:
-                print("aiohttp failed for rest query")
+            except Exception as e:
+                print(f"aiohttp failed for rest query to {path}: {e}")
                 # Fall back on non-async requests
-                async with self.semaphore:
-                    r_requests = requests.get(
-                        f"https://api.github.com/{path}",
-                        headers=headers,
-                        params=tuple(params.items()),
-                    )
-                    if r_requests.status_code == 202:
-                        print(f"A path returned 202. Retrying...")
-                        await asyncio.sleep(2)
-                        continue
-                    elif r_requests.status_code == 200:
-                        return r_requests.json()
-        # print(f"There were too many 202s. Data for {path} will be incomplete.")
-        print("There were too many 202s. Data for this repository will be incomplete.")
+                try:
+                    async with self.semaphore:
+                        r_requests = requests.get(
+                            f"https://api.github.com/{path}",
+                            headers=headers,
+                            params=tuple(params.items()),
+                        )
+                        if r_requests.status_code == 202:
+                            print(f"Fallback request to {path} returned 202. Retrying in 2s... (attempt {attempt + 1}/60)")
+                            await asyncio.sleep(2)
+                            continue
+                        elif r_requests.status_code == 403:
+                            print(f"Fallback request to {path} returned 403. Retrying in 5s... (attempt {attempt + 1}/60)")
+                            await asyncio.sleep(5)
+                            continue
+                        elif r_requests.status_code == 404:
+                            print(f"Fallback request to {path} returned 404. Skipping...")
+                            return dict()
+                        elif r_requests.status_code == 200:
+                            result_json = r_requests.json()
+                            if result_json is not None:
+                                return result_json
+                except Exception as e2:
+                    print(f"Both aiohttp and requests failed for {path}: {e2}")
+                    
+        print(f"Too many retries for {path}. Data will be incomplete.")
         return dict()
+
+    @staticmethod
+    def summary_query() -> str:
+        """
+        :return: GraphQL query with summary of user stats
+        """
+        return f"""query {{
+  viewer {{
+    login
+    name
+    repositories(first: 100, ownerAffiliations: OWNER, isFork: false) {{
+      totalCount
+      edges {{
+        node {{
+          stargazers {{
+            totalCount
+          }}
+          forkCount
+        }}
+      }}
+    }}
+    pullRequests(first: 1) {{
+      totalCount
+    }}
+    issues(first: 1) {{
+        totalCount
+    }}
+    contributionsCollection {{
+      totalCommitContributions
+      restrictedContributionsCount
+    }}
+  }}
+}}
+"""
 
     @staticmethod
     def repos_overview(
@@ -125,8 +182,8 @@ class Queries(object):
         """
         return f"""{{
   viewer {{
-    login,
-    name,
+    login
+    name
     repositories(
         first: 100,
         orderBy: {{
@@ -258,22 +315,27 @@ class Stats(object):
         exclude_repos: Optional[Set] = None,
         exclude_langs: Optional[Set] = None,
         ignore_forked_repos: bool = False,
+        emails: Optional[List[str]] = None,
     ):
         self.username = username
         self._ignore_forked_repos = ignore_forked_repos
         self._exclude_repos = set() if exclude_repos is None else exclude_repos
         self._exclude_langs = set() if exclude_langs is None else exclude_langs
         self.queries = Queries(username, access_token, session)
+        self._emails = emails
 
         self._name: Optional[str] = None
         self._stargazers: Optional[int] = None
         self._forks: Optional[int] = None
+        self._forks_made: Optional[int] = None
         self._total_contributions: Optional[int] = None
+        self._total_commits: Optional[int] = None
+        self._prs: Optional[int] = None
+        self._issues: Optional[int] = None
         self._languages: Optional[Dict[str, Any]] = None
         self._repos: Optional[Set[str]] = None
         self._lines_changed: Optional[Tuple[int, int]] = None
         self._views: Optional[int] = None
-        self._emails: Optional[Set[str]] = None  # Add this line
 
     async def to_str(self) -> str:
         """
@@ -296,6 +358,32 @@ Project page views: {await self.views:,}
 Languages:
   - {formatted_languages}"""
 
+    async def get_summary_stats(self) -> None:
+        """
+        Get lots of summary statistics using one big query. Sets many attributes
+        """
+        raw_results = await self.queries.query(self.queries.summary_query())
+        if raw_results is None:
+            return
+        viewer = raw_results.get("data", {}).get("viewer", {})
+        if not viewer:
+            return
+
+        self._name = viewer.get("name") or viewer.get("login", "No Name")
+        self._stargazers = sum(
+            [
+                repo["node"]["stargazers"]["totalCount"]
+                for repo in viewer["repositories"]["edges"]
+            ]
+        )
+        self._forks = sum(
+            [repo["node"]["forkCount"] for repo in viewer["repositories"]["edges"]]
+        )
+
+        self._prs = viewer.get("pullRequests", {}).get("totalCount", 0)
+        self._issues = viewer.get("issues", {}).get("totalCount", 0)
+        contributions = viewer.get("contributionsCollection", {})
+
     async def get_stats(self) -> None:
         """
         Get lots of summary statistics using one big query. Sets many attributes
@@ -306,10 +394,18 @@ Languages:
         self._repos = set()
 
         exclude_langs_lower = {x.lower() for x in self._exclude_langs}
+        print(f"Fetching stats for user: {self.username}")
+        print(f"Excluding repositories: {self._exclude_repos}")
+        print(f"Excluding languages: {self._exclude_langs}")
+        print(f"Ignore forked repos: {self._ignore_forked_repos}")
 
         next_owned = None
         next_contrib = None
+        page_count = 0
         while True:
+            page_count += 1
+            print(f"Fetching page {page_count}...")
+            
             raw_results = await self.queries.query(
                 Queries.repos_overview(
                     owned_cursor=next_owned, contrib_cursor=next_contrib
@@ -338,6 +434,7 @@ Languages:
             if not self._ignore_forked_repos:
                 repos += contrib_repos.get("nodes", [])
 
+            processed_repos = 0
             for repo in repos:
                 if repo is None:
                     continue
@@ -345,23 +442,26 @@ Languages:
                 if name in self._repos or name in self._exclude_repos:
                     continue
                 self._repos.add(name)
-                self._stargazers += repo.get("stargazers").get("totalCount", 0)
+                processed_repos += 1
+                
+                self._stargazers += repo.get("stargazers", {}).get("totalCount", 0)
                 self._forks += repo.get("forkCount", 0)
 
                 for lang in repo.get("languages", {}).get("edges", []):
-                    name = lang.get("node", {}).get("name", "Other")
-                    languages = await self.languages
-                    if name.lower() in exclude_langs_lower:
+                    lang_name = lang.get("node", {}).get("name", "Other")
+                    if lang_name.lower() in exclude_langs_lower:
                         continue
-                    if name in languages:
-                        languages[name]["size"] += lang.get("size", 0)
-                        languages[name]["occurrences"] += 1
+                    if lang_name in self._languages:
+                        self._languages[lang_name]["size"] += lang.get("size", 0)
+                        self._languages[lang_name]["occurrences"] += 1
                     else:
-                        languages[name] = {
+                        self._languages[lang_name] = {
                             "size": lang.get("size", 0),
                             "occurrences": 1,
                             "color": lang.get("node", {}).get("color"),
                         }
+
+            print(f"Processed {processed_repos} repositories on page {page_count}")
 
             if owned_repos.get("pageInfo", {}).get(
                 "hasNextPage", False
@@ -375,11 +475,12 @@ Languages:
             else:
                 break
 
-        # TODO: Improve languages to scale by number of contributions to
-        #       specific filetypes
+        print(f"Total repositories found: {len(self._repos)}")
+        print(f"Languages found: {len(self._languages)}")
+
         langs_total = sum([v.get("size", 0) for v in self._languages.values()])
         for k, v in self._languages.items():
-            v["prop"] = 100 * (v.get("size", 0) / langs_total)
+            v["prop"] = 100 * (v.get("size", 0) / langs_total) if langs_total > 0 else 0
 
     @property
     async def name(self) -> str:
@@ -388,7 +489,7 @@ Languages:
         """
         if self._name is not None:
             return self._name
-        await self.get_stats()
+        await self.get_summary_stats()
         assert self._name is not None
         return self._name
 
@@ -399,20 +500,29 @@ Languages:
         """
         if self._stargazers is not None:
             return self._stargazers
-        await self.get_stats()
+        await self.get_summary_stats()
         assert self._stargazers is not None
         return self._stargazers
 
     @property
     async def forks(self) -> int:
         """
-        :return: total number of forks on user's repos
+        :return: total number of forks on user's repos + forks made by user
         """
-        if self._forks is not None:
-            return self._forks
-        await self.get_stats()
+        # Primeiro, obter forks recebidos
+        if self._forks is None:
+            await self.get_summary_stats()
         assert self._forks is not None
-        return self._forks
+        forks_received = self._forks
+        
+        # Depois, obter forks feitos
+        forks_made = await self.forks_made
+        
+        # Retornar a soma total
+        total = forks_received + forks_made
+        print(f"Total forks: {forks_received} received + {forks_made} made = {total}")
+        
+        return total
 
     @property
     async def languages(self) -> Dict:
@@ -484,22 +594,42 @@ Languages:
             return self._lines_changed
         additions = 0
         deletions = 0
-        for repo in await self.repos:
-            r = await self.queries.query_rest(f"/repos/{repo}/stats/contributors")
-            for author_obj in r:
-                # Handle malformed response from the API by skipping this repo
-                if not isinstance(author_obj, dict) or not isinstance(
-                    author_obj.get("author", {}), dict
-                ):
+        repos = await self.repos
+        print(f"Calculating lines changed for {len(repos)} repositories...")
+        
+        for i, repo in enumerate(repos):
+            try:
+                print(f"Processing repository {i+1}/{len(repos)}: {repo}")
+                r = await self.queries.query_rest(f"/repos/{repo}/stats/contributors")
+                
+                if not r or not isinstance(r, list):
+                    print(f"Invalid response for {repo}: {type(r)}")
                     continue
-                author = author_obj.get("author", {}).get("login", "")
-                if author != self.username:
-                    continue
+                    
+                for author_obj in r:
+                    # Handle malformed response from the API by skipping this repo
+                    if not isinstance(author_obj, dict) or not isinstance(
+                        author_obj.get("author", {}), dict
+                    ):
+                        continue
+                    author = author_obj.get("author", {}).get("login", "")
+                    if author.lower() != self.username.lower():
+                        continue
 
-                for week in author_obj.get("weeks", []):
-                    additions += week.get("a", 0)
-                    deletions += week.get("d", 0)
+                    weeks = author_obj.get("weeks", [])
+                    if not isinstance(weeks, list):
+                        continue
+                        
+                    for week in weeks:
+                        if isinstance(week, dict):
+                            additions += week.get("a", 0)
+                            deletions += week.get("d", 0)
+                            
+            except Exception as e:
+                print(f"Error processing {repo}: {e}")
+                continue
 
+        print(f"Total lines: +{additions}, -{deletions}")
         self._lines_changed = (additions, deletions)
         return self._lines_changed
 
@@ -513,69 +643,223 @@ Languages:
             return self._views
 
         total = 0
-        for repo in await self.repos:
-            r = await self.queries.query_rest(f"/repos/{repo}/traffic/views")
-            for view in r.get("views", []):
-                total += view.get("count", 0)
+        repos = await self.repos
+        print(f"Calculating views for {len(repos)} repositories...")
+        
+        for i, repo in enumerate(repos):
+            try:
+                print(f"Processing views for repository {i+1}/{len(repos)}: {repo}")
+                r = await self.queries.query_rest(f"/repos/{repo}/traffic/views")
+                
+                if not r or not isinstance(r, dict):
+                    print(f"Invalid response for {repo}: {type(r)}")
+                    continue
+                    
+                views_data = r.get("views", [])
+                if not isinstance(views_data, list):
+                    continue
+                    
+                for view in views_data:
+                    if isinstance(view, dict):
+                        total += view.get("count", 0)
+                        
+            except Exception as e:
+                print(f"Error processing views for {repo}: {e}")
+                continue
 
+        print(f"Total views (last 14 days): {total}")
         self._views = total
         return total
-        
+
+    @property
     async def total_commits(self) -> int:
         """
-        Get the total number of commits made by the user.
+        Get the total number of commits made by the user (igual ao script original).
         """
-
         total_commits = 0
-        for email in self._emails:
-            query = """
-            query {
-              user(login: "%s") {
-                contributionsCollection {
+        if self._emails:
+            for email in self._emails:
+                query = f'''
+                query {{
+                  user(login: "{self.username}") {{
+                    contributionsCollection {{
+                      totalCommitContributions
+                    }}
+                  }}
+                }}
+                '''
+                response = await self.queries.query(query)
+                if 'data' in response and 'user' in response['data']:
+                    total_commit = response['data']['user']['contributionsCollection']['totalCommitContributions']
+                    total_commits += total_commit
+                else:
+                    print(f"Erro ao buscar commits para email {email}: {response}")
+        else:
+            query = f'''
+            query {{
+              user(login: "{self.username}") {{
+                contributionsCollection {{
                   totalCommitContributions
-                }
-              }
-            }
-            """ % self.username
-            print(f"Running query for email: {email}")
+                }}
+              }}
+            }}
+            '''
             response = await self.queries.query(query)
-            print(f"Response for email {email}: {response}")
             if 'data' in response and 'user' in response['data']:
-                total_commits += response['data']['user']['contributionsCollection']['totalCommitContributions']
+                total_commits = response['data']['user']['contributionsCollection']['totalCommitContributions']
             else:
-                print(f"Error: 'data' or 'user' not found in response for email {email}")
-                print(response)
-        print(f"Total commits: {total_commits}")
+                print(f"Erro ao buscar commits para username {self.username}: {response}")
         return total_commits
 
-        query = """
-        query {
-          user(login: "%s") {
-            contributionsCollection {
-              totalCommitContributions
-            }
-          }
-        }
-        """ % self.username
-        response = await self.queries.query(query)
-        return response["data"]["user"]["contributionsCollection"]["totalCommitContributions"]
-
-
-    async def total_prs(self) -> int:
+    @property
+    async def prs(self) -> int:
         """
         Get the total number of pull requests made by the user.
         """
-        query = """
-        query {
-          user(login: "%s") {
-            pullRequests {
-              totalCount
-            }
-          }
-        }
-        """ % self.username
-        response = await self.queries.query(query)
-        return response["data"]["user"]["pullRequests"]["totalCount"]
+        if self._prs is not None:
+            return self._prs
+        await self.get_summary_stats()
+        assert self._prs is not None
+        return self._prs
+
+    @property
+    async def issues(self) -> int:
+        """
+        Get the total number of issues opened by the user.
+        """
+        if self._issues is not None:
+            return self._issues
+        await self.get_summary_stats()
+        assert self._issues is not None
+        return self._issues
+
+    async def get_user_forks(self) -> None:
+        """
+        Get repositories forked by the user
+        """
+        if self._forks_made is not None:
+            return
+            
+        print("Fetching forks made by user...")
+        
+        total_forks = 0
+        cursor = None
+        
+        while True:
+            query = f"""
+query {{
+  viewer {{
+    repositories(first: 100, isFork: true, ownerAffiliations: OWNER, after: {"null" if cursor is None else '"' + cursor + '"'}) {{
+      totalCount
+      pageInfo {{
+        hasNextPage
+        endCursor
+      }}
+      nodes {{
+        nameWithOwner
+        parent {{
+          nameWithOwner
+        }}
+      }}
+    }}
+  }}
+}}
+"""
+            raw_results = await self.queries.query(query)
+            
+            if raw_results is None:
+                self._forks_made = 0
+                return
+                
+            viewer = raw_results.get("data", {}).get("viewer", {})
+            if not viewer:
+                self._forks_made = 0
+                return
+                
+            repositories = viewer.get("repositories", {})
+            
+            # Na primeira página, pegamos o totalCount
+            if cursor is None:
+                total_forks = repositories.get("totalCount", 0)
+                
+            # Verificar se há mais páginas
+            page_info = repositories.get("pageInfo", {})
+            if page_info.get("hasNextPage"):
+                cursor = page_info.get("endCursor")
+            else:
+                break
+                
+        self._forks_made = total_forks
+        print(f"Found {self._forks_made} forks made by user")
+
+    @property
+    async def forks_made(self) -> int:
+        """
+        :return: total number of forks made by the user
+        """
+        if self._forks_made is not None:
+            return self._forks_made
+        await self.get_user_forks()
+        assert self._forks_made is not None
+        return self._forks_made
+
+    async def get_all_time_commits(self) -> None:
+        """
+        Get total commits from all years via GraphQL
+        """
+        print("Fetching total commits from all years...")
+        
+        # Buscar todos os anos de contribuição
+        years = (
+            (await self.queries.query(Queries.contrib_years()))
+            .get("data", {})
+            .get("viewer", {})
+            .get("contributionsCollection", {})
+            .get("contributionYears", [])
+        )
+        
+        print(f"Found contribution years: {years}")
+        total_commits = 0
+        
+        # Para cada ano, buscar o total de commits
+        for year in years:
+            query = f"""
+query {{
+  viewer {{
+    contributionsCollection(from: "{year}-01-01T00:00:00Z", to: "{int(year) + 1}-01-01T00:00:00Z") {{
+      totalCommitContributions
+      restrictedContributionsCount
+    }}
+  }}
+}}
+"""
+            result = await self.queries.query(query)
+            if result and "data" in result:
+                contrib = result.get("data", {}).get("viewer", {}).get("contributionsCollection", {})
+                year_commits = (
+                    contrib.get("totalCommitContributions", 0) + 
+                    contrib.get("restrictedContributionsCount", 0)
+                )
+                total_commits += year_commits
+                print(f"  Year {year}: {year_commits} commits")
+            else:
+                print(f"  Year {year}: Failed to fetch data")
+        
+        self._total_commits = total_commits
+        print(f"Total commits from all years: {total_commits}")
+
+    @property
+    async def total_forks(self) -> int:
+        """
+        :return: total number of forks on user's repos + forks made by user
+        """
+        forks_received = await self.forks
+        forks_made = await self.forks_made
+        
+        total = forks_received + forks_made
+        print(f"Total forks: {forks_received} received + {forks_made} made = {total}")
+        
+        return total
 
 ###############################################################################
 # Main Function
