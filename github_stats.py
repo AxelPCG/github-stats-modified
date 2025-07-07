@@ -388,7 +388,8 @@ Languages:
         """
         Get lots of summary statistics using one big query. Sets many attributes
         """
-        # Não inicializar stargazers e forks aqui, pois usaremos get_summary_stats
+        self._stargazers = 0
+        self._forks = 0
         self._languages = dict()
         self._repos = set()
 
@@ -443,7 +444,8 @@ Languages:
                 self._repos.add(name)
                 processed_repos += 1
                 
-                # Não contar stars e forks aqui - usamos get_summary_stats para isso
+                self._stargazers += repo.get("stargazers", {}).get("totalCount", 0)
+                self._forks += repo.get("forkCount", 0)
 
                 for lang in repo.get("languages", {}).get("edges", []):
                     lang_name = lang.get("node", {}).get("name", "Other")
@@ -672,13 +674,42 @@ Languages:
     @property
     async def total_commits(self) -> int:
         """
-        Get the total number of commits made by the user from all years.
+        Get the total number of commits made by the user (igual ao script original).
         """
-        # Sempre recalcular se for None para garantir contagem de todos os anos
-        if self._total_commits is None:
-            await self.get_all_time_commits()
-        assert self._total_commits is not None
-        return self._total_commits
+        total_commits = 0
+        if self._emails:
+            for email in self._emails:
+                query = f'''
+                query {{
+                  user(login: "{self.username}") {{
+                    contributionsCollection {{
+                      totalCommitContributions
+                    }}
+                  }}
+                }}
+                '''
+                response = await self.queries.query(query)
+                if 'data' in response and 'user' in response['data']:
+                    total_commit = response['data']['user']['contributionsCollection']['totalCommitContributions']
+                    total_commits += total_commit
+                else:
+                    print(f"Erro ao buscar commits para email {email}: {response}")
+        else:
+            query = f'''
+            query {{
+              user(login: "{self.username}") {{
+                contributionsCollection {{
+                  totalCommitContributions
+                }}
+              }}
+            }}
+            '''
+            response = await self.queries.query(query)
+            if 'data' in response and 'user' in response['data']:
+                total_commits = response['data']['user']['contributionsCollection']['totalCommitContributions']
+            else:
+                print(f"Erro ao buscar commits para username {self.username}: {response}")
+        return total_commits
 
     @property
     async def prs(self) -> int:
