@@ -296,6 +296,31 @@ query {{
 }}
 """
 
+    @staticmethod
+    def user_forked_repos() -> str:
+        """
+        :return: GraphQL query to get repositories forked by the user
+        """
+        return """
+query {
+  viewer {
+    repositories(first: 100, isFork: true, ownerAffiliations: OWNER) {
+      totalCount
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+      nodes {
+        nameWithOwner
+        parent {
+          nameWithOwner
+        }
+      }
+    }
+  }
+}
+"""
+
 
 class Stats(object):
     """
@@ -322,6 +347,7 @@ class Stats(object):
         self._name: Optional[str] = None
         self._stargazers: Optional[int] = None
         self._forks: Optional[int] = None
+        self._forks_made: Optional[int] = None
         self._total_contributions: Optional[int] = None
         self._total_commits: Optional[int] = None
         self._prs: Optional[int] = None
@@ -508,13 +534,19 @@ Languages:
     @property
     async def forks(self) -> int:
         """
-        :return: total number of forks on user's repos
+        :return: total number of forks on user's repos + forks made by user
         """
-        if self._forks is not None:
-            return self._forks
-        await self.get_stats()
+        if self._forks is None:
+            await self.get_stats()
         assert self._forks is not None
-        return self._forks
+        forks_received = self._forks
+            
+        forks_made = await self.forks_made
+        
+        total_forks = forks_received + forks_made
+        print(f"Total forks: {forks_received} received + {forks_made} made = {total_forks}")
+        
+        return total_forks
 
     @property
     async def languages(self) -> Dict:
@@ -695,6 +727,41 @@ Languages:
         await self.get_summary_stats()
         assert self._issues is not None
         return self._issues
+
+    async def get_user_forks(self) -> None:
+        """
+        Get repositories forked by the user
+        """
+        if self._forks_made is not None:
+            return
+            
+        print("Fetching forks made by user...")
+        raw_results = await self.queries.query(Queries.user_forked_repos())
+        
+        if raw_results is None:
+            self._forks_made = 0
+            return
+            
+        viewer = raw_results.get("data", {}).get("viewer", {})
+        if not viewer:
+            self._forks_made = 0
+            return
+            
+        repositories = viewer.get("repositories", {})
+        self._forks_made = repositories.get("totalCount", 0)
+        
+        print(f"Found {self._forks_made} forks made by user")
+
+    @property
+    async def forks_made(self) -> int:
+        """
+        :return: total number of forks made by the user
+        """
+        if self._forks_made is not None:
+            return self._forks_made
+        await self.get_user_forks()
+        assert self._forks_made is not None
+        return self._forks_made
 
 ###############################################################################
 # Main Function
