@@ -73,7 +73,7 @@ class Queries(object):
         :return: deserialized REST JSON output
         """
 
-        for _ in range(60):
+        for attempt in range(60):
             headers = {
                 "Authorization": f"token {self.access_token}",
             }
@@ -89,33 +89,49 @@ class Queries(object):
                         params=tuple(params.items()),
                     )
                 if r_async.status == 202:
-                    # print(f"{path} returned 202. Retrying...")
-                    print(f"A path returned 202. Retrying...")
+                    print(f"Request to {path} returned 202 (processing). Retrying in 2s... (attempt {attempt + 1}/60)")
                     await asyncio.sleep(2)
                     continue
+                elif r_async.status == 403:
+                    print(f"Request to {path} returned 403 (rate limit). Retrying in 5s... (attempt {attempt + 1}/60)")
+                    await asyncio.sleep(5)
+                    continue
+                elif r_async.status == 404:
+                    print(f"Request to {path} returned 404 (not found). Skipping...")
+                    return dict()
 
                 result = await r_async.json()
                 if result is not None:
                     return result
-            except Exception:
-                print("aiohttp failed for rest query")
+            except Exception as e:
+                print(f"aiohttp failed for rest query to {path}: {e}")
                 # Fall back on non-async requests
-                async with self.semaphore:
-                    r_requests = requests.get(
-                        f"https://api.github.com/{path}",
-                        headers=headers,
-                        params=tuple(params.items()),
-                    )
-                    if r_requests.status_code == 202:
-                        print(f"A path returned 202. Retrying...")
-                        await asyncio.sleep(2)
-                        continue
-                    elif r_requests.status_code == 200:
-                        result_json = r_requests.json()
-                        if result_json is not None:
-                            return result_json
-        # print(f"There were too many 202s. Data for {path} will be incomplete.")
-        print("There were too many 202s. Data for this repository will be incomplete.")
+                try:
+                    async with self.semaphore:
+                        r_requests = requests.get(
+                            f"https://api.github.com/{path}",
+                            headers=headers,
+                            params=tuple(params.items()),
+                        )
+                        if r_requests.status_code == 202:
+                            print(f"Fallback request to {path} returned 202. Retrying in 2s... (attempt {attempt + 1}/60)")
+                            await asyncio.sleep(2)
+                            continue
+                        elif r_requests.status_code == 403:
+                            print(f"Fallback request to {path} returned 403. Retrying in 5s... (attempt {attempt + 1}/60)")
+                            await asyncio.sleep(5)
+                            continue
+                        elif r_requests.status_code == 404:
+                            print(f"Fallback request to {path} returned 404. Skipping...")
+                            return dict()
+                        elif r_requests.status_code == 200:
+                            result_json = r_requests.json()
+                            if result_json is not None:
+                                return result_json
+                except Exception as e2:
+                    print(f"Both aiohttp and requests failed for {path}: {e2}")
+                    
+        print(f"Too many retries for {path}. Data will be incomplete.")
         return dict()
 
     @staticmethod
@@ -376,10 +392,18 @@ Languages:
         self._repos = set()
 
         exclude_langs_lower = {x.lower() for x in self._exclude_langs}
+        print(f"Fetching stats for user: {self.username}")
+        print(f"Excluding repositories: {self._exclude_repos}")
+        print(f"Excluding languages: {self._exclude_langs}")
+        print(f"Ignore forked repos: {self._ignore_forked_repos}")
 
         next_owned = None
         next_contrib = None
+        page_count = 0
         while True:
+            page_count += 1
+            print(f"Fetching page {page_count}...")
+            
             raw_results = await self.queries.query(
                 Queries.repos_overview(
                     owned_cursor=next_owned, contrib_cursor=next_contrib
@@ -408,6 +432,7 @@ Languages:
             if not self._ignore_forked_repos:
                 repos += contrib_repos.get("nodes", [])
 
+            processed_repos = 0
             for repo in repos:
                 if repo is None:
                     continue
@@ -415,23 +440,27 @@ Languages:
                 if name in self._repos or name in self._exclude_repos:
                     continue
                 self._repos.add(name)
-                # self._stargazers += repo.get("stargazers").get("totalCount", 0)
-                # self._forks += repo.get("forkCount", 0)
+                processed_repos += 1
+                
+                # Corrigir: descomentar e ajustar a contagem de stars e forks
+                self._stargazers += repo.get("stargazers", {}).get("totalCount", 0)
+                self._forks += repo.get("forkCount", 0)
 
                 for lang in repo.get("languages", {}).get("edges", []):
-                    name = lang.get("node", {}).get("name", "Other")
-                    languages = await self.languages
-                    if name.lower() in exclude_langs_lower:
+                    lang_name = lang.get("node", {}).get("name", "Other")
+                    if lang_name.lower() in exclude_langs_lower:
                         continue
-                    if name in languages:
-                        languages[name]["size"] += lang.get("size", 0)
-                        languages[name]["occurrences"] += 1
+                    if lang_name in self._languages:
+                        self._languages[lang_name]["size"] += lang.get("size", 0)
+                        self._languages[lang_name]["occurrences"] += 1
                     else:
-                        languages[name] = {
+                        self._languages[lang_name] = {
                             "size": lang.get("size", 0),
                             "occurrences": 1,
                             "color": lang.get("node", {}).get("color"),
                         }
+
+            print(f"Processed {processed_repos} repositories on page {page_count}")
 
             if owned_repos.get("pageInfo", {}).get(
                 "hasNextPage", False
@@ -444,6 +473,11 @@ Languages:
                 )
             else:
                 break
+
+        print(f"Total repositories found: {len(self._repos)}")
+        print(f"Total stars: {self._stargazers}")
+        print(f"Total forks: {self._forks}")
+        print(f"Languages found: {len(self._languages)}")
 
         langs_total = sum([v.get("size", 0) for v in self._languages.values()])
         for k, v in self._languages.items():
@@ -467,7 +501,7 @@ Languages:
         """
         if self._stargazers is not None:
             return self._stargazers
-        await self.get_summary_stats()
+        await self.get_stats()
         assert self._stargazers is not None
         return self._stargazers
 
@@ -478,7 +512,7 @@ Languages:
         """
         if self._forks is not None:
             return self._forks
-        await self.get_summary_stats()
+        await self.get_stats()
         assert self._forks is not None
         return self._forks
 
@@ -552,22 +586,42 @@ Languages:
             return self._lines_changed
         additions = 0
         deletions = 0
-        for repo in await self.repos:
-            r = await self.queries.query_rest(f"/repos/{repo}/stats/contributors")
-            for author_obj in r:
-                # Handle malformed response from the API by skipping this repo
-                if not isinstance(author_obj, dict) or not isinstance(
-                    author_obj.get("author", {}), dict
-                ):
+        repos = await self.repos
+        print(f"Calculating lines changed for {len(repos)} repositories...")
+        
+        for i, repo in enumerate(repos):
+            try:
+                print(f"Processing repository {i+1}/{len(repos)}: {repo}")
+                r = await self.queries.query_rest(f"/repos/{repo}/stats/contributors")
+                
+                if not r or not isinstance(r, list):
+                    print(f"Invalid response for {repo}: {type(r)}")
                     continue
-                author = author_obj.get("author", {}).get("login", "")
-                if author.lower() != self.username.lower():
-                    continue
+                    
+                for author_obj in r:
+                    # Handle malformed response from the API by skipping this repo
+                    if not isinstance(author_obj, dict) or not isinstance(
+                        author_obj.get("author", {}), dict
+                    ):
+                        continue
+                    author = author_obj.get("author", {}).get("login", "")
+                    if author.lower() != self.username.lower():
+                        continue
 
-                for week in author_obj.get("weeks", []):
-                    additions += week.get("a", 0)
-                    deletions += week.get("d", 0)
+                    weeks = author_obj.get("weeks", [])
+                    if not isinstance(weeks, list):
+                        continue
+                        
+                    for week in weeks:
+                        if isinstance(week, dict):
+                            additions += week.get("a", 0)
+                            deletions += week.get("d", 0)
+                            
+            except Exception as e:
+                print(f"Error processing {repo}: {e}")
+                continue
 
+        print(f"Total lines: +{additions}, -{deletions}")
         self._lines_changed = (additions, deletions)
         return self._lines_changed
 
@@ -581,11 +635,31 @@ Languages:
             return self._views
 
         total = 0
-        for repo in await self.repos:
-            r = await self.queries.query_rest(f"/repos/{repo}/traffic/views")
-            for view in r.get("views", []):
-                total += view.get("count", 0)
+        repos = await self.repos
+        print(f"Calculating views for {len(repos)} repositories...")
+        
+        for i, repo in enumerate(repos):
+            try:
+                print(f"Processing views for repository {i+1}/{len(repos)}: {repo}")
+                r = await self.queries.query_rest(f"/repos/{repo}/traffic/views")
+                
+                if not r or not isinstance(r, dict):
+                    print(f"Invalid response for {repo}: {type(r)}")
+                    continue
+                    
+                views_data = r.get("views", [])
+                if not isinstance(views_data, list):
+                    continue
+                    
+                for view in views_data:
+                    if isinstance(view, dict):
+                        total += view.get("count", 0)
+                        
+            except Exception as e:
+                print(f"Error processing views for {repo}: {e}")
+                continue
 
+        print(f"Total views (last 14 days): {total}")
         self._views = total
         return total
 
