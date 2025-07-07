@@ -412,8 +412,7 @@ Languages:
         """
         Get lots of summary statistics using one big query. Sets many attributes
         """
-        self._stargazers = 0
-        self._forks = 0
+        # Não inicializar stargazers e forks aqui, pois usaremos get_summary_stats
         self._languages = dict()
         self._repos = set()
 
@@ -468,9 +467,7 @@ Languages:
                 self._repos.add(name)
                 processed_repos += 1
                 
-                # Corrigir: descomentar e ajustar a contagem de stars e forks
-                self._stargazers += repo.get("stargazers", {}).get("totalCount", 0)
-                self._forks += repo.get("forkCount", 0)
+                # Não contar stars e forks aqui - usamos get_summary_stats para isso
 
                 for lang in repo.get("languages", {}).get("edges", []):
                     lang_name = lang.get("node", {}).get("name", "Other")
@@ -501,8 +498,6 @@ Languages:
                 break
 
         print(f"Total repositories found: {len(self._repos)}")
-        print(f"Total stars: {self._stargazers}")
-        print(f"Total forks: {self._forks}")
         print(f"Languages found: {len(self._languages)}")
 
         langs_total = sum([v.get("size", 0) for v in self._languages.values()])
@@ -527,26 +522,20 @@ Languages:
         """
         if self._stargazers is not None:
             return self._stargazers
-        await self.get_stats()
+        await self.get_summary_stats()
         assert self._stargazers is not None
         return self._stargazers
 
     @property
     async def forks(self) -> int:
         """
-        :return: total number of forks on user's repos + forks made by user
+        :return: total number of forks on user's repos
         """
-        if self._forks is None:
-            await self.get_stats()
+        if self._forks is not None:
+            return self._forks
+        await self.get_summary_stats()
         assert self._forks is not None
-        forks_received = self._forks
-            
-        forks_made = await self.forks_made
-        
-        total_forks = forks_received + forks_made
-        print(f"Total forks: {forks_received} received + {forks_made} made = {total_forks}")
-        
-        return total_forks
+        return self._forks
 
     @property
     async def languages(self) -> Dict:
@@ -698,11 +687,11 @@ Languages:
     @property
     async def total_commits(self) -> int:
         """
-        Get the total number of commits made by the user.
+        Get the total number of commits made by the user from all years.
         """
         if self._total_commits is not None:
             return self._total_commits
-        await self.get_summary_stats()
+        await self.get_all_time_commits()
         assert self._total_commits is not None
         return self._total_commits
 
@@ -762,6 +751,68 @@ Languages:
         await self.get_user_forks()
         assert self._forks_made is not None
         return self._forks_made
+
+    async def get_all_time_commits(self) -> None:
+        """
+        Get total commits from all years
+        """
+        if self._total_commits is not None:
+            return
+            
+        print("Fetching commits from all years...")
+        
+        # Primeiro, pegar os commits do contributionsCollection (ano atual)
+        await self.get_summary_stats()
+        current_year_commits = self._total_commits or 0
+        
+        # Depois, buscar commits de todos os anos
+        years = (
+            (await self.queries.query(Queries.contrib_years()))
+            .get("data", {})
+            .get("viewer", {})
+            .get("contributionsCollection", {})
+            .get("contributionYears", [])
+        )
+        
+        total_commits = 0
+        
+        # Para cada ano, buscar o total de commits
+        for year in years:
+            query = f"""
+query {{
+  viewer {{
+    contributionsCollection(from: "{year}-01-01T00:00:00Z", to: "{int(year) + 1}-01-01T00:00:00Z") {{
+      totalCommitContributions
+      restrictedContributionsCount
+    }}
+  }}
+}}
+"""
+            result = await self.queries.query(query)
+            if result:
+                contrib = result.get("data", {}).get("viewer", {}).get("contributionsCollection", {})
+                year_commits = (
+                    contrib.get("totalCommitContributions", 0) + 
+                    contrib.get("restrictedContributionsCount", 0)
+                )
+                total_commits += year_commits
+                print(f"Year {year}: {year_commits} commits")
+        
+        self._total_commits = total_commits
+        print(f"Total commits from all years: {total_commits}")
+
+    @property
+    async def total_forks(self) -> int:
+        """
+        :return: total number of forks on user's repos + forks made by user
+        """
+        forks_received = await self.forks
+        forks_made = await self.forks_made
+        
+        total = forks_received + forks_made
+        print(f"Total forks: {forks_received} received + {forks_made} made = {total}")
+        
+        return total
 
 ###############################################################################
 # Main Function
