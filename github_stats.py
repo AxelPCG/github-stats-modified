@@ -383,10 +383,6 @@ Languages:
         self._prs = viewer.get("pullRequests", {}).get("totalCount", 0)
         self._issues = viewer.get("issues", {}).get("totalCount", 0)
         contributions = viewer.get("contributionsCollection", {})
-        self._total_commits = (
-            contributions.get("totalCommitContributions", 0)
-            + contributions.get("restrictedContributionsCount", 0)
-        )
 
     async def get_stats(self) -> None:
         """
@@ -778,67 +774,25 @@ query {{
 
     async def get_all_time_commits(self) -> None:
         """
-        Get total commits from all time, including commits with different emails
+        Get total commits from all years via GraphQL
         """
-        print("Fetching total commits...")
+        print("Fetching total commits from all years...")
+        
+        # Buscar todos os anos de contribuição
+        years = (
+            (await self.queries.query(Queries.contrib_years()))
+            .get("data", {})
+            .get("viewer", {})
+            .get("contributionsCollection", {})
+            .get("contributionYears", [])
+        )
+        
+        print(f"Found contribution years: {years}")
         total_commits = 0
         
-        # Se temos emails, buscar commits para cada email
-        if self._emails:
-            print(f"Using Git emails: {self._emails}")
-            for email in self._emails:
-                # Usar a API de busca para contar commits por email
-                search_url = f"/search/commits"
-                params = {
-                    "q": f"author-email:{email}",
-                    "per_page": 1
-                }
-                
-                result = await self.queries.query_rest(search_url, params)
-                
-                if result and "total_count" in result:
-                    email_commits = result["total_count"]
-                    total_commits += email_commits
-                    print(f"  Email {email}: {email_commits} commits")
-        
-        # Também buscar por username
-        search_url = f"/search/commits"
-        params = {
-            "q": f"author:{self.username}",
-            "per_page": 1
-        }
-        
-        result = await self.queries.query_rest(search_url, params)
-        
-        if result and "total_count" in result:
-            username_commits = result["total_count"]
-            print(f"  Username {self.username}: {username_commits} commits")
-            
-            # Se não tínhamos emails, usar apenas commits por username
-            if not self._emails:
-                total_commits = username_commits
-            else:
-                # Se temos emails, adicionar commits por username que não foram contados
-                # (isso pode resultar em duplicatas, mas é melhor que perder commits)
-                if username_commits > total_commits:
-                    total_commits = username_commits
-        
-        # Se a busca falhou completamente, usar GraphQL como fallback
-        if total_commits == 0:
-            print("Search API failed or returned 0, using GraphQL fallback...")
-            
-            # Buscar commits de todos os anos via GraphQL
-            years = (
-                (await self.queries.query(Queries.contrib_years()))
-                .get("data", {})
-                .get("viewer", {})
-                .get("contributionsCollection", {})
-                .get("contributionYears", [])
-            )
-            
-            # Para cada ano, buscar o total de commits
-            for year in years:
-                query = f"""
+        # Para cada ano, buscar o total de commits
+        for year in years:
+            query = f"""
 query {{
   viewer {{
     contributionsCollection(from: "{year}-01-01T00:00:00Z", to: "{int(year) + 1}-01-01T00:00:00Z") {{
@@ -848,18 +802,20 @@ query {{
   }}
 }}
 """
-                result = await self.queries.query(query)
-                if result:
-                    contrib = result.get("data", {}).get("viewer", {}).get("contributionsCollection", {})
-                    year_commits = (
-                        contrib.get("totalCommitContributions", 0) + 
-                        contrib.get("restrictedContributionsCount", 0)
-                    )
-                    total_commits += year_commits
-                    print(f"  Year {year}: {year_commits} commits")
+            result = await self.queries.query(query)
+            if result and "data" in result:
+                contrib = result.get("data", {}).get("viewer", {}).get("contributionsCollection", {})
+                year_commits = (
+                    contrib.get("totalCommitContributions", 0) + 
+                    contrib.get("restrictedContributionsCount", 0)
+                )
+                total_commits += year_commits
+                print(f"  Year {year}: {year_commits} commits")
+            else:
+                print(f"  Year {year}: Failed to fetch data")
         
         self._total_commits = total_commits
-        print(f"Total commits from all sources: {total_commits}")
+        print(f"Total commits from all years: {total_commits}")
 
     @property
     async def total_forks(self) -> int:
