@@ -77,11 +77,11 @@ class Queries(object):
             headers = {
                 "Authorization": f"token {self.access_token}",
             }
-            
+
             # API de busca de commits requer header especial
             if "/search/commits" in path:
                 headers["Accept"] = "application/vnd.github.cloak-preview+json"
-                
+
             if params is None:
                 params = dict()
             if path.startswith("/"):
@@ -94,11 +94,15 @@ class Queries(object):
                         params=tuple(params.items()),
                     )
                 if r_async.status == 202:
-                    print(f"Request to {path} returned 202 (processing). Retrying in 2s... (attempt {attempt + 1}/60)")
+                    print(
+                        f"Request to {path} returned 202 (processing). Retrying in 2s... (attempt {attempt + 1}/60)"
+                    )
                     await asyncio.sleep(2)
                     continue
                 elif r_async.status == 403:
-                    print(f"Request to {path} returned 403 (rate limit). Retrying in 5s... (attempt {attempt + 1}/60)")
+                    print(
+                        f"Request to {path} returned 403 (rate limit). Retrying in 5s... (attempt {attempt + 1}/60)"
+                    )
                     await asyncio.sleep(5)
                     continue
                 elif r_async.status == 404:
@@ -119,15 +123,21 @@ class Queries(object):
                             params=tuple(params.items()),
                         )
                         if r_requests.status_code == 202:
-                            print(f"Fallback request to {path} returned 202. Retrying in 2s... (attempt {attempt + 1}/60)")
+                            print(
+                                f"Fallback request to {path} returned 202. Retrying in 2s... (attempt {attempt + 1}/60)"
+                            )
                             await asyncio.sleep(2)
                             continue
                         elif r_requests.status_code == 403:
-                            print(f"Fallback request to {path} returned 403. Retrying in 5s... (attempt {attempt + 1}/60)")
+                            print(
+                                f"Fallback request to {path} returned 403. Retrying in 5s... (attempt {attempt + 1}/60)"
+                            )
                             await asyncio.sleep(5)
                             continue
                         elif r_requests.status_code == 404:
-                            print(f"Fallback request to {path} returned 404. Skipping...")
+                            print(
+                                f"Fallback request to {path} returned 404. Skipping..."
+                            )
                             return dict()
                         elif r_requests.status_code == 200:
                             result_json = r_requests.json()
@@ -135,7 +145,7 @@ class Queries(object):
                                 return result_json
                 except Exception as e2:
                     print(f"Both aiohttp and requests failed for {path}: {e2}")
-                    
+
         print(f"Too many retries for {path}. Data will be incomplete.")
         return dict()
 
@@ -191,7 +201,7 @@ class Queries(object):
             direction: DESC
         }},
         isFork: false,
-        after: {"null" if owned_cursor is None else '"'+ owned_cursor +'"'}
+        after: {"null" if owned_cursor is None else '"' + owned_cursor + '"'}
     ) {{
       pageInfo {{
         hasNextPage
@@ -227,7 +237,7 @@ class Queries(object):
             REPOSITORY,
             PULL_REQUEST_REVIEW
         ]
-        after: {"null" if contrib_cursor is None else '"'+ contrib_cursor +'"'}
+        after: {"null" if contrib_cursor is None else '"' + contrib_cursor + '"'}
     ) {{
       pageInfo {{
         hasNextPage
@@ -336,7 +346,7 @@ class Stats(object):
         self._repos: Optional[Set[str]] = None
         self._lines_changed: Optional[Tuple[int, int]] = None
         self._views: Optional[int] = None
-        
+
         # Lock to prevent concurrent get_stats calls
         self._stats_lock: Optional[asyncio.Lock] = None
         self._stats_fetched: bool = False
@@ -377,7 +387,7 @@ Languages:
 
         if self._name is None:
             self._name = viewer.get("name") or viewer.get("login", "No Name")
-        
+
         # Only set PRs and Issues here - stars/forks come from get_stats()
         self._prs = viewer.get("pullRequests", {}).get("totalCount", 0)
         self._issues = viewer.get("issues", {}).get("totalCount", 0)
@@ -390,12 +400,12 @@ Languages:
         # Initialize lock if needed
         if self._stats_lock is None:
             self._stats_lock = asyncio.Lock()
-            
+
         async with self._stats_lock:
             # Check if already fetched (another coroutine may have done it while we waited)
             if self._stats_fetched:
                 return
-                
+
             self._stargazers = 0
             self._forks = 0
             self._languages = dict()
@@ -413,7 +423,7 @@ Languages:
             while True:
                 page_count += 1
                 print(f"Fetching page {page_count}...")
-                
+
                 raw_results = await self.queries.query(
                     Queries.repos_overview(
                         owned_cursor=next_owned, contrib_cursor=next_contrib
@@ -421,7 +431,9 @@ Languages:
                 )
                 raw_results = raw_results if raw_results is not None else {}
 
-                self._name = raw_results.get("data", {}).get("viewer", {}).get("name", None)
+                self._name = (
+                    raw_results.get("data", {}).get("viewer", {}).get("name", None)
+                )
                 if self._name is None:
                     self._name = (
                         raw_results.get("data", {})
@@ -435,7 +447,9 @@ Languages:
                     .get("repositoriesContributedTo", {})
                 )
                 owned_repos = (
-                    raw_results.get("data", {}).get("viewer", {}).get("repositories", {})
+                    raw_results.get("data", {})
+                    .get("viewer", {})
+                    .get("repositories", {})
                 )
 
                 repos = owned_repos.get("nodes", [])
@@ -451,20 +465,28 @@ Languages:
                         continue
                     self._repos.add(name)
                     processed_repos += 1
-                    
+
                     self._stargazers += repo.get("stargazers", {}).get("totalCount", 0)
                     self._forks += repo.get("forkCount", 0)
 
-                    for lang in repo.get("languages", {}).get("edges", []):
+                    repo_langs = repo.get("languages", {}).get("edges", [])
+                    if repo_langs:
+                        lang_names = [
+                            entry.get("node", {}).get("name", "?") for entry in repo_langs
+                        ]
+                        print(f"  Repo {name}: {lang_names}")
+
+                    for lang in repo_langs:
                         lang_name = lang.get("node", {}).get("name", "Other")
+                        lang_size = lang.get("size", 0)
                         if lang_name.lower() in exclude_langs_lower:
                             continue
                         if lang_name in self._languages:
-                            self._languages[lang_name]["size"] += lang.get("size", 0)
+                            self._languages[lang_name]["size"] += lang_size
                             self._languages[lang_name]["occurrences"] += 1
                         else:
                             self._languages[lang_name] = {
-                                "size": lang.get("size", 0),
+                                "size": lang_size,
                                 "occurrences": 1,
                                 "color": lang.get("node", {}).get("color"),
                             }
@@ -488,8 +510,20 @@ Languages:
 
             langs_total = sum([v.get("size", 0) for v in self._languages.values()])
             for k, v in self._languages.items():
-                v["prop"] = 100 * (v.get("size", 0) / langs_total) if langs_total > 0 else 0
-                
+                v["prop"] = (
+                    100 * (v.get("size", 0) / langs_total) if langs_total > 0 else 0
+                )
+
+            # Debug: show language breakdown
+            print("Language breakdown (by size):")
+            sorted_langs = sorted(
+                self._languages.items(), key=lambda x: x[1].get("size", 0), reverse=True
+            )
+            for lang_name, lang_data in sorted_langs[:15]:  # Top 15
+                print(
+                    f"  {lang_name}: {lang_data.get('size', 0):,} bytes ({lang_data.get('prop', 0):.2f}%)"
+                )
+
             self._stats_fetched = True
 
     @property
@@ -524,14 +558,14 @@ Languages:
             await self.get_stats()
         assert self._forks is not None
         forks_received = self._forks
-        
+
         # Depois, obter forks feitos
         forks_made = await self.forks_made
-        
+
         # Retornar a soma total
         total = forks_received + forks_made
         print(f"Total forks: {forks_received} received + {forks_made} made = {total}")
-        
+
         return total
 
     @property
@@ -585,11 +619,11 @@ Languages:
             .get("contributionYears", [])
         )
         print(f"Found contribution years: {years}")
-        
+
         if not years:
             print("WARNING: No contribution years found!")
             return 0
-            
+
         by_year = (
             (await self.queries.query(Queries.all_contribs(years)))
             .get("data", {})
@@ -599,7 +633,7 @@ Languages:
         for year in by_year:
             contrib = year.get("contributionCalendar", {}).get("totalContributions", 0)
             self._total_contributions += contrib
-            
+
         print(f"Total contributions (all years): {self._total_contributions}")
         return cast(int, self._total_contributions)
 
@@ -614,16 +648,16 @@ Languages:
         deletions = 0
         repos = await self.repos
         print(f"Calculating lines changed for {len(repos)} repositories...")
-        
+
         for i, repo in enumerate(repos):
             try:
-                print(f"Processing repository {i+1}/{len(repos)}: {repo}")
+                print(f"Processing repository {i + 1}/{len(repos)}: {repo}")
                 r = await self.queries.query_rest(f"/repos/{repo}/stats/contributors")
-                
+
                 if not r or not isinstance(r, list):
                     print(f"Invalid response for {repo}: {type(r)}")
                     continue
-                    
+
                 for author_obj in r:
                     # Handle malformed response from the API by skipping this repo
                     if not isinstance(author_obj, dict) or not isinstance(
@@ -637,12 +671,12 @@ Languages:
                     weeks = author_obj.get("weeks", [])
                     if not isinstance(weeks, list):
                         continue
-                        
+
                     for week in weeks:
                         if isinstance(week, dict):
                             additions += week.get("a", 0)
                             deletions += week.get("d", 0)
-                            
+
             except Exception as e:
                 print(f"Error processing {repo}: {e}")
                 continue
@@ -663,24 +697,24 @@ Languages:
         total = 0
         repos = await self.repos
         print(f"Calculating views for {len(repos)} repositories...")
-        
+
         for i, repo in enumerate(repos):
             try:
-                print(f"Processing views for repository {i+1}/{len(repos)}: {repo}")
+                print(f"Processing views for repository {i + 1}/{len(repos)}: {repo}")
                 r = await self.queries.query_rest(f"/repos/{repo}/traffic/views")
-                
+
                 if not r or not isinstance(r, dict):
                     print(f"Invalid response for {repo}: {type(r)}")
                     continue
-                    
+
                 views_data = r.get("views", [])
                 if not isinstance(views_data, list):
                     continue
-                    
+
                 for view in views_data:
                     if isinstance(view, dict):
                         total += view.get("count", 0)
-                        
+
             except Exception as e:
                 print(f"Error processing views for {repo}: {e}")
                 continue
@@ -707,8 +741,10 @@ Languages:
                 }}
                 '''
                 response = await self.queries.query(query)
-                if 'data' in response and 'user' in response['data']:
-                    total_commit = response['data']['user']['contributionsCollection']['totalCommitContributions']
+                if "data" in response and "user" in response["data"]:
+                    total_commit = response["data"]["user"]["contributionsCollection"][
+                        "totalCommitContributions"
+                    ]
                     total_commits += total_commit
                 else:
                     print(f"Erro ao buscar commits para email {email}: {response}")
@@ -723,10 +759,14 @@ Languages:
             }}
             '''
             response = await self.queries.query(query)
-            if 'data' in response and 'user' in response['data']:
-                total_commits = response['data']['user']['contributionsCollection']['totalCommitContributions']
+            if "data" in response and "user" in response["data"]:
+                total_commits = response["data"]["user"]["contributionsCollection"][
+                    "totalCommitContributions"
+                ]
             else:
-                print(f"Erro ao buscar commits para username {self.username}: {response}")
+                print(
+                    f"Erro ao buscar commits para username {self.username}: {response}"
+                )
         return total_commits
 
     @property
@@ -757,12 +797,12 @@ Languages:
         """
         if self._forks_made is not None:
             return
-            
+
         print("Fetching forks made by user...")
-        
+
         total_forks = 0
         cursor = None
-        
+
         while True:
             query = f"""
 query {{
@@ -784,29 +824,29 @@ query {{
 }}
 """
             raw_results = await self.queries.query(query)
-            
+
             if raw_results is None:
                 self._forks_made = 0
                 return
-                
+
             viewer = raw_results.get("data", {}).get("viewer", {})
             if not viewer:
                 self._forks_made = 0
                 return
-                
+
             repositories = viewer.get("repositories", {})
-            
+
             # Na primeira página, pegamos o totalCount
             if cursor is None:
                 total_forks = repositories.get("totalCount", 0)
-                
+
             # Verificar se há mais páginas
             page_info = repositories.get("pageInfo", {})
             if page_info.get("hasNextPage"):
                 cursor = page_info.get("endCursor")
             else:
                 break
-                
+
         self._forks_made = total_forks
         print(f"Found {self._forks_made} forks made by user")
 
@@ -826,7 +866,7 @@ query {{
         Get total commits from all years via GraphQL
         """
         print("Fetching total commits from all years...")
-        
+
         # Buscar todos os anos de contribuição
         years = (
             (await self.queries.query(Queries.contrib_years()))
@@ -835,10 +875,10 @@ query {{
             .get("contributionsCollection", {})
             .get("contributionYears", [])
         )
-        
+
         print(f"Found contribution years: {years}")
         total_commits = 0
-        
+
         # Para cada ano, buscar o total de commits
         for year in years:
             query = f"""
@@ -853,16 +893,19 @@ query {{
 """
             result = await self.queries.query(query)
             if result and "data" in result:
-                contrib = result.get("data", {}).get("viewer", {}).get("contributionsCollection", {})
-                year_commits = (
-                    contrib.get("totalCommitContributions", 0) + 
-                    contrib.get("restrictedContributionsCount", 0)
+                contrib = (
+                    result.get("data", {})
+                    .get("viewer", {})
+                    .get("contributionsCollection", {})
+                )
+                year_commits = contrib.get("totalCommitContributions", 0) + contrib.get(
+                    "restrictedContributionsCount", 0
                 )
                 total_commits += year_commits
                 print(f"  Year {year}: {year_commits} commits")
             else:
                 print(f"  Year {year}: Failed to fetch data")
-        
+
         self._total_commits = total_commits
         print(f"Total commits from all years: {total_commits}")
 
