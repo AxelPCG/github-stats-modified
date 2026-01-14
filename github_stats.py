@@ -144,33 +144,33 @@ class Queries(object):
         """
         :return: GraphQL query with summary of user stats
         """
-        return f"""query {{
-  viewer {{
+        return """query {
+  viewer {
     login
     name
-    repositories(first: 100, ownerAffiliations: OWNER, isFork: false) {{
+    repositories(first: 100, ownerAffiliations: OWNER, isFork: false) {
       totalCount
-      edges {{
-        node {{
-          stargazers {{
+      edges {
+        node {
+          stargazers {
             totalCount
-          }}
+          }
           forkCount
-        }}
-      }}
-    }}
-    pullRequests(first: 1) {{
+        }
+      }
+    }
+    pullRequests(first: 1) {
       totalCount
-    }}
-    issues(first: 1) {{
+    }
+    issues(first: 1) {
         totalCount
-    }}
-    contributionsCollection {{
+    }
+    contributionsCollection {
       totalCommitContributions
       restrictedContributionsCount
-    }}
-  }}
-}}
+    }
+  }
+}
 """
 
     @staticmethod
@@ -383,6 +383,10 @@ Languages:
         self._prs = viewer.get("pullRequests", {}).get("totalCount", 0)
         self._issues = viewer.get("issues", {}).get("totalCount", 0)
         contributions = viewer.get("contributionsCollection", {})
+        self._total_contributions = (
+            contributions.get("totalCommitContributions", 0) +
+            contributions.get("restrictedContributionsCount", 0)
+        )
 
     async def get_stats(self) -> None:
         """
@@ -848,18 +852,6 @@ query {{
         self._total_commits = total_commits
         print(f"Total commits from all years: {total_commits}")
 
-    @property
-    async def total_forks(self) -> int:
-        """
-        :return: total number of forks on user's repos + forks made by user
-        """
-        forks_received = await self.forks
-        forks_made = await self.forks_made
-        
-        total = forks_received + forks_made
-        print(f"Total forks: {forks_received} received + {forks_made} made = {total}")
-        
-        return total
 
 ###############################################################################
 # Main Function
