@@ -336,6 +336,10 @@ class Stats(object):
         self._repos: Optional[Set[str]] = None
         self._lines_changed: Optional[Tuple[int, int]] = None
         self._views: Optional[int] = None
+        
+        # Lock to prevent concurrent get_stats calls
+        self._stats_lock: Optional[asyncio.Lock] = None
+        self._stats_fetched: bool = False
 
     async def to_str(self) -> str:
         """
@@ -360,7 +364,9 @@ Languages:
 
     async def get_summary_stats(self) -> None:
         """
-        Get lots of summary statistics using one big query. Sets many attributes
+        Get lots of summary statistics using one big query. Sets many attributes.
+        NOTE: This only sets _prs and _issues. Other stats come from get_stats()
+        or dedicated methods to avoid conflicts.
         """
         raw_results = await self.queries.query(self.queries.summary_query())
         if raw_results is None:
@@ -369,122 +375,122 @@ Languages:
         if not viewer:
             return
 
-        self._name = viewer.get("name") or viewer.get("login", "No Name")
-        self._stargazers = sum(
-            [
-                repo["node"]["stargazers"]["totalCount"]
-                for repo in viewer["repositories"]["edges"]
-            ]
-        )
-        self._forks = sum(
-            [repo["node"]["forkCount"] for repo in viewer["repositories"]["edges"]]
-        )
-
+        if self._name is None:
+            self._name = viewer.get("name") or viewer.get("login", "No Name")
+        
+        # Only set PRs and Issues here - stars/forks come from get_stats()
         self._prs = viewer.get("pullRequests", {}).get("totalCount", 0)
         self._issues = viewer.get("issues", {}).get("totalCount", 0)
-        contributions = viewer.get("contributionsCollection", {})
-        self._total_contributions = (
-            contributions.get("totalCommitContributions", 0) +
-            contributions.get("restrictedContributionsCount", 0)
-        )
 
     async def get_stats(self) -> None:
         """
-        Get lots of summary statistics using one big query. Sets many attributes
+        Get lots of summary statistics using one big query. Sets many attributes.
+        Thread-safe: uses lock to prevent concurrent calls.
         """
-        self._stargazers = 0
-        self._forks = 0
-        self._languages = dict()
-        self._repos = set()
-
-        exclude_langs_lower = {x.lower() for x in self._exclude_langs}
-        print(f"Fetching stats for user: {self.username}")
-        print(f"Excluding repositories: {self._exclude_repos}")
-        print(f"Excluding languages: {self._exclude_langs}")
-        print(f"Ignore forked repos: {self._ignore_forked_repos}")
-
-        next_owned = None
-        next_contrib = None
-        page_count = 0
-        while True:
-            page_count += 1
-            print(f"Fetching page {page_count}...")
+        # Initialize lock if needed
+        if self._stats_lock is None:
+            self._stats_lock = asyncio.Lock()
             
-            raw_results = await self.queries.query(
-                Queries.repos_overview(
-                    owned_cursor=next_owned, contrib_cursor=next_contrib
-                )
-            )
-            raw_results = raw_results if raw_results is not None else {}
+        async with self._stats_lock:
+            # Check if already fetched (another coroutine may have done it while we waited)
+            if self._stats_fetched:
+                return
+                
+            self._stargazers = 0
+            self._forks = 0
+            self._languages = dict()
+            self._repos = set()
 
-            self._name = raw_results.get("data", {}).get("viewer", {}).get("name", None)
-            if self._name is None:
-                self._name = (
+            exclude_langs_lower = {x.lower() for x in self._exclude_langs}
+            print(f"Fetching stats for user: {self.username}")
+            print(f"Excluding repositories: {self._exclude_repos}")
+            print(f"Excluding languages: {self._exclude_langs}")
+            print(f"Ignore forked repos: {self._ignore_forked_repos}")
+
+            next_owned = None
+            next_contrib = None
+            page_count = 0
+            while True:
+                page_count += 1
+                print(f"Fetching page {page_count}...")
+                
+                raw_results = await self.queries.query(
+                    Queries.repos_overview(
+                        owned_cursor=next_owned, contrib_cursor=next_contrib
+                    )
+                )
+                raw_results = raw_results if raw_results is not None else {}
+
+                self._name = raw_results.get("data", {}).get("viewer", {}).get("name", None)
+                if self._name is None:
+                    self._name = (
+                        raw_results.get("data", {})
+                        .get("viewer", {})
+                        .get("login", "No Name")
+                    )
+
+                contrib_repos = (
                     raw_results.get("data", {})
                     .get("viewer", {})
-                    .get("login", "No Name")
+                    .get("repositoriesContributedTo", {})
+                )
+                owned_repos = (
+                    raw_results.get("data", {}).get("viewer", {}).get("repositories", {})
                 )
 
-            contrib_repos = (
-                raw_results.get("data", {})
-                .get("viewer", {})
-                .get("repositoriesContributedTo", {})
-            )
-            owned_repos = (
-                raw_results.get("data", {}).get("viewer", {}).get("repositories", {})
-            )
+                repos = owned_repos.get("nodes", [])
+                if not self._ignore_forked_repos:
+                    repos += contrib_repos.get("nodes", [])
 
-            repos = owned_repos.get("nodes", [])
-            if not self._ignore_forked_repos:
-                repos += contrib_repos.get("nodes", [])
-
-            processed_repos = 0
-            for repo in repos:
-                if repo is None:
-                    continue
-                name = repo.get("nameWithOwner")
-                if name in self._repos or name in self._exclude_repos:
-                    continue
-                self._repos.add(name)
-                processed_repos += 1
-                
-                self._stargazers += repo.get("stargazers", {}).get("totalCount", 0)
-                self._forks += repo.get("forkCount", 0)
-
-                for lang in repo.get("languages", {}).get("edges", []):
-                    lang_name = lang.get("node", {}).get("name", "Other")
-                    if lang_name.lower() in exclude_langs_lower:
+                processed_repos = 0
+                for repo in repos:
+                    if repo is None:
                         continue
-                    if lang_name in self._languages:
-                        self._languages[lang_name]["size"] += lang.get("size", 0)
-                        self._languages[lang_name]["occurrences"] += 1
-                    else:
-                        self._languages[lang_name] = {
-                            "size": lang.get("size", 0),
-                            "occurrences": 1,
-                            "color": lang.get("node", {}).get("color"),
-                        }
+                    name = repo.get("nameWithOwner")
+                    if name in self._repos or name in self._exclude_repos:
+                        continue
+                    self._repos.add(name)
+                    processed_repos += 1
+                    
+                    self._stargazers += repo.get("stargazers", {}).get("totalCount", 0)
+                    self._forks += repo.get("forkCount", 0)
 
-            print(f"Processed {processed_repos} repositories on page {page_count}")
+                    for lang in repo.get("languages", {}).get("edges", []):
+                        lang_name = lang.get("node", {}).get("name", "Other")
+                        if lang_name.lower() in exclude_langs_lower:
+                            continue
+                        if lang_name in self._languages:
+                            self._languages[lang_name]["size"] += lang.get("size", 0)
+                            self._languages[lang_name]["occurrences"] += 1
+                        else:
+                            self._languages[lang_name] = {
+                                "size": lang.get("size", 0),
+                                "occurrences": 1,
+                                "color": lang.get("node", {}).get("color"),
+                            }
 
-            if owned_repos.get("pageInfo", {}).get(
-                "hasNextPage", False
-            ) or contrib_repos.get("pageInfo", {}).get("hasNextPage", False):
-                next_owned = owned_repos.get("pageInfo", {}).get(
-                    "endCursor", next_owned
-                )
-                next_contrib = contrib_repos.get("pageInfo", {}).get(
-                    "endCursor", next_contrib
-                )
-            else:
-                break
+                print(f"Processed {processed_repos} repositories on page {page_count}")
 
-        print(f"Total repositories found: {len(self._repos)}")
-        print(f"Languages found: {len(self._languages)}")
+                if owned_repos.get("pageInfo", {}).get(
+                    "hasNextPage", False
+                ) or contrib_repos.get("pageInfo", {}).get("hasNextPage", False):
+                    next_owned = owned_repos.get("pageInfo", {}).get(
+                        "endCursor", next_owned
+                    )
+                    next_contrib = contrib_repos.get("pageInfo", {}).get(
+                        "endCursor", next_contrib
+                    )
+                else:
+                    break
 
-        langs_total = sum([v.get("size", 0) for v in self._languages.values()])
-        for k, v in self._languages.items():
-            v["prop"] = 100 * (v.get("size", 0) / langs_total) if langs_total > 0 else 0
+            print(f"Total repositories found: {len(self._repos)}")
+            print(f"Languages found: {len(self._languages)}")
+
+            langs_total = sum([v.get("size", 0) for v in self._languages.values()])
+            for k, v in self._languages.items():
+                v["prop"] = 100 * (v.get("size", 0) / langs_total) if langs_total > 0 else 0
+                
+            self._stats_fetched = True
 
     @property
     async def name(self) -> str:
@@ -493,7 +499,7 @@ Languages:
         """
         if self._name is not None:
             return self._name
-        await self.get_summary_stats()
+        await self.get_stats()
         assert self._name is not None
         return self._name
 
@@ -504,7 +510,7 @@ Languages:
         """
         if self._stargazers is not None:
             return self._stargazers
-        await self.get_summary_stats()
+        await self.get_stats()
         assert self._stargazers is not None
         return self._stargazers
 
@@ -513,9 +519,9 @@ Languages:
         """
         :return: total number of forks on user's repos + forks made by user
         """
-        # Primeiro, obter forks recebidos
+        # Primeiro, obter forks recebidos via get_stats
         if self._forks is None:
-            await self.get_summary_stats()
+            await self.get_stats()
         assert self._forks is not None
         forks_received = self._forks
         
@@ -564,11 +570,12 @@ Languages:
     @property
     async def total_contributions(self) -> int:
         """
-        :return: count of user's total contributions as defined by GitHub
+        :return: count of user's total contributions as defined by GitHub (all years)
         """
         if self._total_contributions is not None:
             return self._total_contributions
 
+        print("Fetching total contributions from all years...")
         self._total_contributions = 0
         years = (
             (await self.queries.query(Queries.contrib_years()))
@@ -577,6 +584,12 @@ Languages:
             .get("contributionsCollection", {})
             .get("contributionYears", [])
         )
+        print(f"Found contribution years: {years}")
+        
+        if not years:
+            print("WARNING: No contribution years found!")
+            return 0
+            
         by_year = (
             (await self.queries.query(Queries.all_contribs(years)))
             .get("data", {})
@@ -584,9 +597,10 @@ Languages:
             .values()
         )
         for year in by_year:
-            self._total_contributions += year.get("contributionCalendar", {}).get(
-                "totalContributions", 0
-            )
+            contrib = year.get("contributionCalendar", {}).get("totalContributions", 0)
+            self._total_contributions += contrib
+            
+        print(f"Total contributions (all years): {self._total_contributions}")
         return cast(int, self._total_contributions)
 
     @property

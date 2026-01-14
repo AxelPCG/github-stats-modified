@@ -180,19 +180,14 @@ async def main() -> None:
             emails=email_list,
         )
         try:
-            # Generate both images in parallel, but catch errors individually
-            results = await asyncio.gather(
-                generate_languages(s),
-                generate_overview(s),
-                return_exceptions=True
-            )
+            # Pre-fetch stats to ensure data is loaded before generating images
+            print("Pre-fetching repository statistics...")
+            await s.get_stats()
+            print(f"Stats loaded: {len(await s.repos)} repos, {len(await s.languages)} languages")
             
-            # Check for exceptions
-            for i, result in enumerate(results):
-                if isinstance(result, Exception):
-                    image_name = "languages.svg" if i == 0 else "overview.svg"
-                    print(f"ERROR: Failed to generate {image_name}: {result}")
-                    raise result
+            # Generate both images (stats already loaded, so parallel is safe now)
+            await generate_overview(s)
+            await generate_languages(s)
                     
             print("All images generated successfully!")
         except Exception as e:
