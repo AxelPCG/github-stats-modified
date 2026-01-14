@@ -2,7 +2,7 @@ name: Generate Stats Images
 
 on:
   push:
-    branches: [ master ]
+    branches: [ master, main ]
   schedule:
     - cron: "5 0 * * *"
   workflow_dispatch:
@@ -39,18 +39,24 @@ jobs:
         python3 generate_images.py
       env:
         ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
+        GITHUB_ACTOR: ${{ github.actor }}
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        EXCLUDE_FORKED_REPOS: false
+        # Optional secrets - Python code handles None/empty values gracefully
         EXCLUDED: ${{ secrets.EXCLUDED }}
         EXCLUDED_LANGS: ${{ secrets.EXCLUDED_LANGS }}
-        EXCLUDE_FORKED_REPOS: false
         GIT_EMAILS: ${{ secrets.GIT_EMAILS }}
 
     # Commit all changed files to the repository
     - name: Commit to the repo
       run: |
-        git config --global user.name "AxelPCG/gitgub-stats-modified"
+        git config --global user.name "AxelPCG/github-stats-modified"
         git config --global user.email "axelchepanski@hotmail.com"
-        git add .
-        # Force the build to succeed, even if no files were changed
-        git commit -m 'Update generated files' || true
-        git push
+        git add generated/
+        # Only commit if there are changes
+        if git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          git commit -m 'Update generated files [skip ci]' || exit 1
+          git push || exit 1
+        fi
